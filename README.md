@@ -12,7 +12,7 @@ Run Slither on a Hardhat/Foundry/Dapp/Brownie application:
 
 ```
 cd ./gigahorse
-python ./gigahorse.py -C ./clients/crpwarner.dl ../../dataset/test/hex/mint/mint_1.hex 
+python ./gigahorse.py -C ./clients/crpwarner.dl ../dataset/groundtruth/hex/0x0414D8C87b271266a5864329fb4932bBE19c0c49.hex
 ```
 
 
