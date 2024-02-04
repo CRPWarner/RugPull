@@ -1,0 +1,1061 @@
+#include "../clientlib/decompiler_imports.dl"
+#include "../clientlib/analytics_client.dl"
+#include "../clientlib/data_structures.dl"
+#include "../clientlib/guards.dl"
+
+.output StoreGlobalVariable
+.output LoadGlobalVariable
+.output DataStructure_Type
+.output StorageIndex_StorageConstruct
+.output Variable_StorageIndex
+.output Variable_Value
+.output StorageVariable_Type
+.output Statement_Defines
+.output Statement_Uses
+.output DataFlows
+.output StaticallyGuardedBlock
+
+
+// Information Flow Analysis
+// Token Balances Management
+// LoadTokenBalances
+.decl CheckAddress(func: Function, block: Block, stmt_jumpi: Statement, stmt_caller: Statement)
+.output CheckAddress
+CheckAddress(func, block, stmt_jumpi, stmt_caller) :-
+  Statement_Opcode(stmt_and, "AND"),
+  Statement_Defines(stmt_and, output_and, _),
+  DataFlows(output_and, input_jumpi),
+  Statement_Opcode(stmt_jumpi, "JUMPI"),
+  Statement_Uses(stmt_jumpi, input_jumpi, _),
+  Statement_Block(stmt_and, block),
+  Statement_Block(stmt_jumpi, block),
+  InFunction(block, func),
+
+  Statement_Opcode(stmt_caller, "CALLER"),
+  Statement_Function(stmt_caller, func).
+
+.decl FuncFallback(func: Function)
+.output FuncFallback
+FuncFallback(func) :-
+  (HighLevelFunctionName(func, "()"); HighLevelFunctionName(func, "fallback()")).
+
+.decl FuncPublicwithOwner(func: Function)
+.output FuncPublicwithOwner
+FuncPublicwithOwner(func) :-
+  func != "0x0",
+  !FuncFallback(func),
+  !IsFuncERC(func),
+  IsPublicFunction(func),
+  StaticallyGuardedBlock(block, _),
+  InFunction(block, func),
+  
+  CheckAddress(func, _, _, _).
+
+FuncPublicwithOwner(func) :-
+  func != "0x0",
+  !FuncFallback(func),
+  !IsFuncERC(func),
+  IsPublicFunction(func),
+  StaticallyGuardedBlock(block, _),
+  InFunction(block, inter_func),
+  FuncCall(func, inter_func),
+
+  CheckAddress(inter_func, _, _, _).
+
+.decl GuardedFunc(func: Function, block: Block)
+.output GuardedFunc
+GuardedFunc(func, block) :-
+  func != "0x0",
+  StaticallyGuardedBlock(block, _),
+  InFunction(block, func).
+
+.decl IsFuncERC(func: Function)
+.output IsFuncERC
+// ERC 20  
+IsFuncERC(func) :-
+  func != "0x0",
+  (HighLevelFunctionName(func, "transfer(address,uint256)");
+  HighLevelFunctionName(func, "transferFrom(address,address,uint256)");
+  HighLevelFunctionName(func, "name()");
+  HighLevelFunctionName(func, "symbol()");
+  HighLevelFunctionName(func, "decimals()");
+  HighLevelFunctionName(func, "totalSupply()");
+  HighLevelFunctionName(func, "balanceOf(address)");
+  HighLevelFunctionName(func, "allowance(address,address)");
+  HighLevelFunctionName(func, "approve(address,uint256)");
+
+  // ERC 721
+  HighLevelFunctionName(func, "balanceOf(address,uint256)");
+  HighLevelFunctionName(func, "ownerOf(uint256)");
+  HighLevelFunctionName(func, "safeTransferFrom(address,address,uint256,bytes)");
+  HighLevelFunctionName(func, "safeTransferFrom(address,address,uint256)");
+  HighLevelFunctionName(func, "setApprovalForAll(address,bool)");
+  HighLevelFunctionName(func, "isApprovedForAll(address,address)");
+  HighLevelFunctionName(func, "getApproved(uint256)");
+  
+  // Others
+  HighLevelFunctionName(func, "decreaseApproval(address,uint256)");
+  HighLevelFunctionName(func, "increaseApproval(address,uint256)");
+  HighLevelFunctionName(func, "increaseAllowance(address,uint256)");
+  HighLevelFunctionName(func, "decreaseAllowance(address,uint256)")).
+
+.decl NotFuncPayable(func: Function, stmt: Statement)
+.output NotFuncPayable
+NotFuncPayable(func, stmt_callvalue) :-
+  Statement_Opcode(stmt_callvalue, "CALLVALUE"),
+  Statement_Defines(stmt_callvalue, output_callvalue, _),
+  Statement_Opcode(stmt_iszero, "ISZERO"),
+  Statement_Uses(stmt_iszero, input_iszero, _),
+  DataFlows(output_callvalue, input_iszero),
+
+  Statement_Block(stmt_callvalue, block),
+  Statement_Block(stmt_iszero, block),
+  InFunction(block, func).
+
+.decl CallValueDetail(func: Function, stmt: Statement, op: Opcode)
+.output CallValueDetail
+CallValueDetail(func, stmt, op) :-
+  Statement_Opcode(stmt_callvalue, "CALLVALUE"),
+  Statement_Function(stmt_callvalue, func),
+  Statement_Opcode(stmt, op),
+  Statement_Block(stmt, block),
+  InFunction(block, func).
+
+
+
+.decl LoadTokenBalances(func: Function, block: Block, stmt_load: Statement, var: Variable)
+.output LoadTokenBalances
+LoadTokenBalances(func, block, stmt_load, var) :-
+  LoadFromDataStructure(stmt_load, account_id, account_var, var),
+  !VariableOfBool(var),
+  
+  Statement_Block(stmt_load, block),
+  InFunction(block, func).
+
+// StoreTokenBalances
+.decl StoreTokenBalances(func: Function, block: Block, stmt_store: Statement, var: Variable)
+.output StoreTokenBalances
+StoreTokenBalances(func, block, stmt_store, var) :-
+  StoreToDataStructure(stmt_store, account_id, var),
+  !VariableOfBool(var),
+  
+  Statement_Block(stmt_store, block),
+  InFunction(block, func).
+
+.decl LoadandStoreBalances(func: Function, id: Value, stmt_load: Statement, stmt_store: Statement)
+.output LoadandStoreBalances
+LoadandStoreBalances(func, id, stmt_load, stmt_store) :-
+  Statement_Opcode(stmt_and, "AND"),
+  Statement_Opcode(stmt_sha3, "SHA3"),
+
+  LoadFromDataStructure(stmt_load, id, _, _),
+  StoreToDataStructure(stmt_store, id, _),
+  
+  Statement_Block(stmt_and, block),
+  Statement_Block(stmt_sha3, block),
+  Statement_Block(stmt_load, block),
+  
+  InFunction(block, func),
+  Statement_Function(stmt_store, func).
+
+.decl LoadFromDoubleMapping(func: Function, block: Block, stmt_load: Statement)
+.output LoadFromDoubleMapping
+LoadFromDoubleMapping(func, block, stmt_load) :-
+  LoadFromDataStructure(stmt_load, _, _, _),
+  Statement_Opcode(stmt_sha3_1, "SHA3"),
+  Statement_Opcode(stmt_and_1, "AND"),
+  Statement_Opcode(stmt_sha3_2, "SHA3"),
+  Statement_Opcode(stmt_and_2, "AND"),
+  stmt_sha3_1 != stmt_sha3_2,
+  stmt_and_1 != stmt_and_2,
+  Statement_Block(stmt_sha3_1, block),
+  Statement_Block(stmt_and_1, block),
+  Statement_Block(stmt_sha3_2, block),
+  Statement_Block(stmt_and_2, block),
+  Statement_Block(stmt_load, block),
+
+  InFunction(block, func).
+
+.decl StoreToDoubleMapping(func: Function, block: Block, stmt_store: Statement)
+.output StoreToDoubleMapping
+StoreToDoubleMapping(func, block, stmt_store) :-
+  StoreToDataStructure(stmt_store, _, _),
+
+  Statement_Opcode(stmt_sha3_1, "SHA3"),
+  Statement_Opcode(stmt_and_1, "AND"),
+  Statement_Opcode(stmt_sha3_2, "SHA3"),
+  Statement_Opcode(stmt_and_2, "AND"),
+  stmt_sha3_1 != stmt_sha3_2,
+  stmt_and_1 != stmt_and_2,
+  Statement_Block(stmt_sha3_1, block),
+  Statement_Block(stmt_and_1, block),
+  Statement_Block(stmt_sha3_2, block),
+  Statement_Block(stmt_and_2, block),
+  Statement_Block(stmt_store, block),
+
+  InFunction(block, func).
+
+.decl CheckTokenBalances(func: Function, block: Block, stmt_load: Statement)
+.output CheckTokenBalances
+CheckTokenBalances(func, block, stmt_load) :-
+  LoadFromDataStructure(stmt_load, _, _, _),
+  Statement_Defines(stmt_load, bal, _),
+
+  Statement_Opcode(stmt_lt, "LT"),
+  Statement_Opcode(stmt_iszero, "ISZERO"),
+  Statement_Opcode(stmt_jumpi, "JUMPI"),
+
+  Statement_Block(stmt_load, block),
+  Statement_Block(stmt_lt, block),
+  Statement_Block(stmt_iszero, block),
+  Statement_Block(stmt_jumpi, block),
+  
+  InFunction(block, func).
+
+CheckTokenBalances(func, block, stmt_load) :-
+  LoadFromDataStructure(stmt_load, _, _, _),
+  Statement_Defines(stmt_load, bal, _),
+
+  Statement_Opcode(stmt_gt, "GT"),
+  Statement_Opcode(stmt_iszero, "ISZERO"),
+  Statement_Opcode(stmt_jumpi, "JUMPI"),
+
+  Statement_Block(stmt_load, block),
+  Statement_Block(stmt_gt, block),
+  Statement_Block(stmt_iszero, block),
+  Statement_Block(stmt_jumpi, block),
+  
+  InFunction(block, func).
+
+
+.decl Burn(func: Function)
+.output Burn
+Burn(func):-
+  func != "0x0",
+  !IsFuncERC(func),
+  IsPublicFunction(func),
+  
+  LoadandStoreBalances(func, _, stmt_load, stmt_store),
+  CheckTokenBalances(func, _, _).
+
+Burn(func):-
+  func != "0x0",
+  !IsFuncERC(func),
+  IsPublicFunction(func),
+  FuncCall(func, inter_func),
+  
+  LoadandStoreBalances(inter_func, _, stmt_load, stmt_store),
+  CheckTokenBalances(inter_func, _, _).
+
+
+.decl Mint(func: Function)
+.output Mint
+Mint(func) :-
+  func != "0x0",
+  !IsFuncERC(func),
+  !Burn(func),
+  !CheckTokenBalances(func, _, _),
+
+  LoadandStoreBalances(func, _, stmt_load, stmt_store),
+
+  Statement_Block(stmt_load, block_load),
+  Statement_Block(stmt_store, block_store),
+  !StoreBool(stmt_store),
+  !StoreToDoubleMapping(_, _, stmt_store),
+  InFunction(block_load, func),
+  InFunction(block_store, func).
+
+Mint(func) :-
+  func != "0x0",
+  !IsFuncERC(func),
+  !Burn(func),
+  !CheckTokenBalances(func, _, _),
+
+  StoreToDataStructure(stmt_store, _, _),
+  !StoreBool(stmt_store),
+  !StoreToDoubleMapping(_, _, stmt_store),
+
+  Statement_Function(stmt_store, func).
+
+.decl Mint_0106(func: Function)
+.output Mint_0106
+Mint_0106(func) :-
+  func != "0x0",
+  // NotFuncPayable(func, _),
+  FuncPublicwithOwner(func),
+  Mint(func).
+
+Mint_0106(func) :-
+  func != "0x0",
+  // NotFuncPayable(func, _),
+  FuncPublicwithOwner(func),
+  Mint(inter_func),
+  FuncCall(func, inter_func).
+
+
+.decl FuncCall(caller: Function, callee: Function)
+.output FuncCall
+FuncCall(caller, callee) :-
+  CallGraphEdge(block, callee),
+  InFunction(block, caller).
+
+
+.decl FuncTransfer(func: Function) 
+.output FuncTransfer
+FuncTransfer(func) :-
+  func != "0x0",
+  LoadandStoreBalances(func, _, stmt_load_from, stmt_store_from),
+  LoadandStoreBalances(func, _, stmt_load_to, stmt_store_to),
+
+  // stmt_load_from != stmt_load_to,
+  stmt_store_from != stmt_store_to.
+
+FuncTransfer(func) :-
+  func != "0x0",
+  FuncTransfer(called_func),
+  FuncCall(func, called_func).
+
+
+.decl TransferDetail(func: Function, block: Block, stmt: Statement, op: Opcode)
+.output TransferDetail
+TransferDetail(func, block, stmt, op) :-
+  FuncTransfer(func),
+  Statement_Opcode(stmt, op),
+  Statement_Block(stmt, block),
+  InFunction(block, func).
+
+.decl StoreBool(stmt: Statement)
+.output StoreBool
+StoreBool(stmt_store) :-
+  Statement_Opcode(stmt_store, "SSTORE"),
+  Statement_Opcode(stmt_or, "OR"),
+  Statement_Defines(stmt_or, output_or, _),
+  DataFlows(output_or, input_sstore),
+  Statement_Uses(stmt_store, input_sstore, 1),
+
+  Statement_Block(stmt_store, block),
+  Statement_Block(stmt_or, block).
+
+StoreBool(stmt_store) :-
+  Statement_Opcode(stmt_store, "SSTORE"),
+  Statement_Opcode(stmt_and, "AND"),
+  Statement_Defines(stmt_and, output_and, _),
+  DataFlows(output_and, input_sstore),
+  Statement_Uses(stmt_store, input_sstore, 1),
+
+  Statement_Block(stmt_store, block),
+  Statement_Block(stmt_and, block).
+
+.decl LoadBool(stmt: Statement)
+.output LoadBool
+LoadBool(stmt_load) :-
+  Statement_Opcode(stmt_load, "SLOAD"),
+  Statement_Opcode(stmt_iszero, "ISZERO"),
+  Statement_Opcode(stmt_and, "AND"),
+
+  Statement_Block(stmt_load, block),
+  Statement_Block(stmt_iszero, block),
+  Statement_Block(stmt_and, block).
+
+
+.decl FuncTransfer_Public(func: Function)
+.output FuncTransfer_Public
+FuncTransfer_Public(func) :-
+  func != "0x0",
+  IsPublicFunction(func),
+  FuncTransfer(func).
+
+FuncTransfer_Public(func) :-
+  func != "0x0",
+  IsPublicFunction(func),
+  FuncTransfer(inter_func),
+
+  FuncCall(func, inter_func).
+
+.decl LimitedTransfer(func: Function, stmt_sload: Statement)
+.output LimitedTransfer
+LimitedTransfer(func, stmt_sload) :-
+  func != "0x0",
+  IsPublicFunction(func),
+  FuncTransfer_Public(func),
+
+  !CheckTokenBalances(_, _, stmt_sload),
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Defines(stmt_sload, loaded_var, _),
+  DataFlows(loaded_var, cond_var),
+  Statement_Function(stmt_sload, func),
+
+  RequireForVar(cond_var, func).
+
+// LimitedTransfer(func, stmt_sload) :-
+//   IsPublicFunction(func),
+//   FuncTransfer(func),
+
+//   !CheckTokenBalances(_, _, stmt_sload),
+//   Statement_Opcode(stmt_sload, "SLOAD"),
+//   Statement_Function(stmt_sload, func),
+//   Statement_Opcode(stmt_jumpi, "JUMPI"),
+//   Statement_Opcode(stmt_iszero, "ISZERO"),
+//   Statement_Opcode(stmt_and, "AND"),
+
+//   Statement_Block(stmt_sload, block),
+//   Statement_Block(stmt_iszero, block),
+//   Statement_Block(stmt_and, block),
+//   Statement_Block(stmt_jumpi, block).
+
+LimitedTransfer(func, stmt_sload) :-
+  func != "0x0",
+  IsPublicFunction(func),
+  FuncTransfer(inter_func),
+  FuncCall(func, inter_func),
+
+  !CheckTokenBalances(_, _, stmt_sload),
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Defines(stmt_sload, loaded_var, _),
+  DataFlows(loaded_var, cond_var),
+  Statement_Function(stmt_sload, inter_func),
+
+  RequireForVar(cond_var, inter_func).
+
+// LimitedTransfer(func, stmt_sload) :-
+//   IsPublicFunction(func),
+//   FuncTransfer(inter_func),
+//   FuncCall(func, inter_func),
+
+//   !CheckTokenBalances(_, _, stmt_sload),
+//   Statement_Opcode(stmt_sload, "SLOAD"),
+//   Statement_Function(stmt_sload, inter_func),
+//   Statement_Opcode(stmt_jumpi, "JUMPI"),
+//   Statement_Opcode(stmt_iszero, "ISZERO"),
+//   Statement_Opcode(stmt_and, "AND"),
+
+//   Statement_Block(stmt_sload, block),
+//   Statement_Block(stmt_iszero, block),
+//   Statement_Block(stmt_and, block),
+//   Statement_Block(stmt_jumpi, block).
+
+
+
+.decl StoreVartoLimitTransfer(func: Function, stmt_store: Statement)
+.output StoreVartoLimitTransfer
+StoreVartoLimitTransfer(func, stmt_store) :-
+  func != "0x0",
+  LimitedTransfer(_, stmt_sload),
+  Statement_Uses(stmt_sload, id_load, _),
+  Statement_Opcode(stmt_store, "SSTORE"),
+  Statement_Uses(stmt_store, id_store, 0),
+  Variable_Value(id_store, val),
+  Variable_Value(id_load, val),
+  Statement_Function(stmt_store, func).
+
+StoreVartoLimitTransfer(func, stmt_store) :-
+  func != "0x0",
+  LimitedTransfer(_, stmt_sload),
+  LoadFromDataStructure(stmt_sload, id, _, _),
+  StoreToDataStructure(stmt_store, id, _),
+
+  Statement_Function(stmt_store, func).
+
+
+.decl Limit_0102(func: Function)
+.output Limit_0102
+Limit_0102(func) :-
+  // 存在一个sload的变量可以限制transfer
+  func != "0x0",
+  // NotFuncPayable(func, _),
+  FuncPublicwithOwner(func),
+  !IsFuncERC(func),
+  StoreVartoLimitTransfer(func, stmt_store),
+  StoreBool(stmt_store).
+
+
+.decl CheckBalancesofInput(func_calldata: Function, func_sload: Function, stmt_calldata: Statement, stmt_sload: Statement)
+.output CheckBalancesofInput
+CheckBalancesofInput(func_calldata, func_sload, stmt_calldata, stmt_sload) :-
+  Statement_Opcode(stmt_calldata, "CALLDATALOAD"),
+  Statement_Defines(stmt_calldata, output_calldata, _),
+  DataFlows(output_calldata, input_and),
+
+  Statement_Opcode(stmt_and, "AND"),
+  Statement_Uses(stmt_and, input_and, _),
+  CheckTokenBalances(_, _, stmt_sload),
+  Statement_Block(stmt_sload, block),
+  Statement_Block(stmt_and, block),
+
+  Statement_Function(stmt_calldata, func_calldata),
+  Statement_Function(stmt_sload, func_sload).
+
+.decl IsFeeExist(func: Function, stmt_sload: Statement)
+.output IsFeeExist
+IsFeeExist(func, stmt_sload) :-
+  (FuncTransfer(func); FuncTransfer_Public(func)),
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Defines(stmt_sload, output_sload, _),
+  Statement_Opcode(stmt_sub, "SUB"),
+  Statement_Uses(stmt_sub, input_sub, _),
+  DataFlows(output_sload, input_sub),
+  Statement_Defines(stmt_sub, output_sub, _),
+  Statement_Opcode(stmt_mul, "MUL"),
+  Statement_Uses(stmt_mul, input_mul, _),
+  DataFlows(output_sub, input_mul),
+
+  Statement_Function(stmt_sload, func),
+  Statement_Function(stmt_sub, func),
+  Statement_Function(stmt_mul, func).
+
+IsFeeExist(func, stmt_sload) :-
+  (FuncTransfer(func); FuncTransfer_Public(func)),
+  FuncCall(func, inter_func),
+
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Defines(stmt_sload, output_sload, _),
+  Statement_Opcode(stmt_sub, "SUB"),
+  Statement_Uses(stmt_sub, input_sub, _),
+  DataFlows(output_sload, input_sub),
+  Statement_Defines(stmt_sub, output_sub, _),
+  Statement_Opcode(stmt_mul, "MUL"),
+  Statement_Uses(stmt_mul, input_mul, _),
+  DataFlows(output_sub, input_mul),
+
+  Statement_Function(stmt_sload, inter_func),
+  Statement_Function(stmt_sub, inter_func),
+  Statement_Function(stmt_mul, inter_func).
+
+IsFeeExist(func, stmt_sload) :-
+  (FuncTransfer(func); FuncTransfer_Public(func)),
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Defines(stmt_sload, output_sload, _),
+  Statement_Opcode(stmt_mul, "MUL"),
+  Statement_Uses(stmt_mul, input_mul, _),
+  DataFlows(output_sload, input_mul),
+
+  Statement_Function(stmt_sload, func),
+  Statement_Function(stmt_mul, func).
+
+IsFeeExist(func, stmt_sload) :-
+  (FuncTransfer(func); FuncTransfer_Public(func)),
+  FuncCall(func, inter_func),
+
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Defines(stmt_sload, output_sload, _),
+  Statement_Opcode(stmt_mul, "MUL"),
+  Statement_Uses(stmt_mul, input_mul, _),
+  DataFlows(output_sload, input_mul),
+
+  Statement_Function(stmt_sload, inter_func),
+  Statement_Function(stmt_mul, inter_func).
+
+IsFeeExist(func, stmt_sload) :-
+  (FuncTransfer(func); FuncTransfer_Public(func)),
+  FuncCall(func, inter_func),
+
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Opcode(stmt_mul, "MUL"),
+  Statement_Block(stmt_sload, block),
+  Statement_Block(stmt_mul, block),
+
+  InFunction(block, inter_func).
+
+IsFeeExist(func, stmt_sload) :-
+  (FuncTransfer(func); FuncTransfer_Public(func)),
+
+  Statement_Opcode(stmt_sload, "SLOAD"),
+  Statement_Opcode(stmt_mul, "MUL"),
+  Statement_Block(stmt_sload, block),
+  Statement_Block(stmt_mul, block),
+
+  InFunction(block, func).
+
+.decl FuncModifyVar(func: Function)
+.output FuncModifyVar
+FuncModifyVar(func) :-
+  func != "0x0",
+  Statement_Opcode(stmt_callload, "CALLDATALOAD"),
+  Statement_Defines(stmt_callload, output_callload, _),
+  DataFlows(output_callload, input_store),
+  Statement_Opcode(stmt_store, "SSTORE"),
+  Statement_Uses(stmt_store, input_store, _),
+  !StoreBool(stmt_store),
+
+  Statement_Function(stmt_callload, func),
+  Statement_Function(stmt_store, func).
+
+
+.decl Leak_0104_Direct(func: Function)
+.output Leak_0104_Direct
+// 直接转账的情况
+Leak_0104_Direct(func) :-
+  func != "0x0",
+  !Limit_0102(func),
+  !Mint_0106(func),
+  // NotFuncPayable(func, _),
+  FuncPublicwithOwner(func),
+  FuncTransfer_Public(func),
+  !IsFuncERC(func),
+
+  CheckBalancesofInput(func, func, _, stmt_sload).
+
+Leak_0104_Direct(func) :-
+  func != "0x0",
+  !Limit_0102(func),
+  !Mint_0106(func),
+  // NotFuncPayable(func, _),
+  FuncPublicwithOwner(func),
+  FuncTransfer(inter_func),
+  FuncCall(func, inter_func),
+  FuncTransfer_Public(func),
+  !IsFuncERC(func),
+
+  CheckBalancesofInput(func, inter_func, _, stmt_sload).
+
+// Fee
+.decl Leak_0104_Fee(func: Function)
+.output Leak_0104_Fee
+Leak_0104_Fee(func) :-
+  // NotFuncPayable(func, _),
+  FuncPublicwithOwner(func),
+  IsFeeExist(_, stmt_sload),
+  Statement_Uses(stmt_sload, id_sload, _),
+  Statement_Opcode(stmt_store, "SSTORE"),
+  !StoreBool(stmt_store),
+  !Limit_0102(func),
+  !Mint_0106(func),
+  Statement_Uses(stmt_store, id_store, 0),
+
+  Variable_Value(id_sload, id),
+  Variable_Value(id_store, id),
+
+  Statement_Function(stmt_store, func).
+
+Leak_0104_Fee(func) :-
+  func != "0x0",
+  // NotFuncPayable(func, _),
+  FuncPublicwithOwner(func),
+  IsFeeExist(_, _),
+  !Limit_0102(func),
+  !Mint_0106(func),
+  FuncModifyVar(func).
+
+.decl Leak_0104(func: Function)
+.output Leak_0104
+Leak_0104(func) :-
+  Leak_0104_Direct(func).
+
+Leak_0104(func) :-
+  Leak_0104_Fee(func).
+  
+
+
+// ***********************************************************
+// fen ge xian
+// ***********************************************************
+
+
+// TokenBalancesAdd
+.decl TokenBalancesAdd(func: Function, stmt_add: Statement, origin_to_balances: Variable, add_amount: Variable, final_to_balances: Variable)
+.output TokenBalancesAdd
+TokenBalancesAdd(func, stmt_add, origin_to_balances, add_amount, final_to_balances) :-
+  LoadTokenBalances(_, _, stmt_load, origin_to_balances),
+  Statement_Opcode(stmt_add, "ADD"),
+  DataFlows(origin_to_balances, temp_var),
+  Statement_Uses(stmt_add, temp_var, _),
+  Statement_Uses(stmt_add, add_amount, _),
+  Statement_Defines(stmt_add, add_result, _),
+  VariableToStore(add_result),
+  StoreTokenBalances(_, _, stmt_store, final_to_balances),
+
+  Statement_Block(stmt_load, block_load),
+  Statement_Block(stmt_add, block_add),
+  Statement_Block(stmt_store, block_store),
+
+  InFunction(block_load, func),
+  InFunction(block_add, func),
+  InFunction(block_store, func).
+
+TokenBalancesAdd(func, stmt_add, origin_to_balances, add_amount, final_to_balances) :-
+  LoadTokenBalances(_, _, stmt_load, origin_to_balances),
+  DataFlows(origin_to_balances, temp_var1),
+  Statement_Opcode(stmt_mstore, "MSTORE"),
+  Statement_Uses(stmt_mstore, temp_var1, _),
+  Statement_Opcode(stmt_mload, "MLOAD"),
+  Statement_Defines(stmt_mload, temp_var2, _),
+  DataFlows(temp_var2, temp_var3),
+  Statement_Opcode(stmt_add, "ADD"),
+  Statement_Uses(stmt_add, temp_var3, _),
+  Statement_Uses(stmt_add, add_amount, _),
+  Statement_Defines(stmt_add, add_result, _),
+  VariableToStore(add_result),
+  StoreTokenBalances(_, _, stmt_store, final_to_balances),
+
+  Statement_Block(stmt_load, block_load),
+  Statement_Block(stmt_add, block_add),
+  Statement_Block(stmt_store, block_store),
+
+  InFunction(block_load, func),
+  InFunction(block_add, func),
+  InFunction(block_store, func).
+
+TokenBalancesAdd(func, stmt_add, origin_to_balances, add_amount, final_to_balances) :-
+  LoadTokenBalances(_, _, stmt_load, origin_to_balances),
+  Statement_Opcode(stmt_add, "ADD"),
+  Statement_Uses(stmt_add, add_amount, _),
+  Statement_Defines(stmt_add, add_result, _),
+  VariableToStore(add_result),
+  StoreTokenBalances(_, _, stmt_store, final_to_balances),
+
+  Statement_Block(stmt_load, block_load),
+  Statement_Block(stmt_add, block_add),
+  Statement_Block(stmt_store, block_store),
+
+  InFunction(block_load, func),
+  InFunction(block_add, func),
+  InFunction(block_store, func).
+
+// TokenBlancesSub
+.decl TokenBalancesSub(func: Function, stmt_sub: Statement, origin_from_balances: Variable, sub_amount: Variable, final_from_balances: Variable)
+.output TokenBalancesSub
+TokenBalancesSub(func, stmt_sub, origin_from_balances, sub_amount, final_from_balances) :-
+  LoadTokenBalances(_, _, stmt_load, origin_from_balances),
+  Statement_Opcode(stmt_sub, "SUB"),
+  DataFlows(origin_from_balances, temp_var),
+  Statement_Uses(stmt_sub, temp_var, 0),
+  Statement_Uses(stmt_sub, sub_amount, 1),
+  Statement_Defines(stmt_sub, sub_result, _),
+  VariableToStore(sub_result),
+  StoreTokenBalances(_, _, stmt_store, final_from_balances),
+
+  Statement_Block(stmt_load, block_load),
+  Statement_Block(stmt_sub, block_sub),
+  Statement_Block(stmt_store, block_store),
+
+  InFunction(block_load, func),
+  InFunction(block_sub, func),
+  InFunction(block_store, func),
+  
+  !NotTokenBalancesSub(stmt_sub).
+
+TokenBalancesSub(func, stmt_sub, origin_from_balances, sub_amount, final_from_balances) :-
+  LoadTokenBalances(_, _, stmt_load, origin_from_balances),
+  DataFlows(origin_from_balances, temp_var1),
+  Statement_Opcode(stmt_mstore, "MSTORE"),
+  Statement_Uses(stmt_mstore, temp_var1, _),
+  Statement_Opcode(stmt_mload, "MLOAD"),
+  Statement_Defines(stmt_mload, temp_var2, _),
+  Statement_Opcode(stmt_sub, "SUB"),
+  DataFlows(temp_var2, temp_var3),
+  Statement_Uses(stmt_sub, temp_var3, 0),
+  Statement_Uses(stmt_sub, sub_amount, 1),
+  Statement_Defines(stmt_sub, sub_result, _),
+  VariableToStore(sub_result),
+  StoreTokenBalances(_, _, stmt_store, final_from_balances),
+
+  Statement_Block(stmt_load, block_load),
+  Statement_Block(stmt_sub, block_sub),
+  Statement_Block(stmt_store, block_store),
+
+  InFunction(block_load, func),
+  InFunction(block_sub, func),
+  InFunction(block_store, func),
+  
+  !NotTokenBalancesSub(stmt_sub).
+
+TokenBalancesSub(func, stmt_sub, origin_from_balances, sub_amount, final_from_balances) :-
+  LoadTokenBalances(_, _, stmt_load, origin_from_balances),
+  Statement_Opcode(stmt_sub, "SUB"),
+  Statement_Uses(stmt_sub, sub_amount, 1),
+  Statement_Defines(stmt_sub, sub_result, _),
+  VariableToStore(sub_result),
+  StoreTokenBalances(_, _, stmt_store, final_from_balances),
+
+  Statement_Block(stmt_load, block_load),
+  Statement_Block(stmt_sub, block_sub),
+  Statement_Block(stmt_store, block_store),
+
+  InFunction(block_load, func),
+  InFunction(block_sub, func),
+  InFunction(block_store, func),
+  
+  !NotTokenBalancesSub(stmt_sub).
+
+// NotTokenBlancesSub
+.decl NotTokenBalancesSub(stmt_sub: Statement)
+NotTokenBalancesSub(stmt_sub) :-
+  Statement_Opcode(stmt_sub, "SUB"),
+  Statement_Opcode(stmt_add, "ADD"),
+  Statement_Defines(stmt_add, temp_var, _),
+  Statement_Uses(stmt_sub, temp_var, _),
+  Statement_Block(stmt_sub, _block),
+  Statement_Block(stmt_add, _block).
+
+
+// Analysis of Variables' types and functions
+// VarInPara
+.decl VariableInParameter(var: Variable, stmt: Statement, _func: Function)
+.output VariableInParameter
+VariableInParameter(var, stmt_callload, _func) :-
+  Statement_Opcode(stmt_callload, "CALLDATALOAD"),
+  Statement_Defines(stmt_callload, var, _),
+  Statement_Function(stmt_callload, _func),
+  !AddressInParameter(var, _, _).
+
+// AccInPara
+.decl AddressInParameter(_account: Variable, stmt: Statement, _func: Function)
+.output AddressInParameter
+AddressInParameter(_account, stmt_callload, _func) :-
+  Statement_Opcode(stmt_callload, "CALLDATALOAD"),
+  Statement_Defines(stmt_callload, _account, _),
+  Statement_Opcode(stmt_and, "AND"),
+  Statement_Uses(stmt_and, _account, _),
+  Statement_Function(stmt_callload, _func),
+  Statement_Function(stmt_and, _func).
+
+// VarNotBool
+.decl VariableExistValueNot01(var: Variable) 
+VariableExistValueNot01(var):-
+  Variable_Value(var, val),
+  val != "0x0",
+  val != "0x1". 
+
+// VarBool
+.decl VariableOfBool(var: Variable)
+VariableOfBool(var) :-
+  (Statement_Opcode(stmt_def, "LT");
+  Statement_Opcode(stmt_def, "GT");
+  Statement_Opcode(stmt_def, "SLT");
+  Statement_Opcode(stmt_def, "SGT");
+  Statement_Opcode(stmt_def, "EQ");
+  Statement_Opcode(stmt_def, "ISZERO");
+  Statement_Opcode(stmt_def, "GT")),
+  Statement_Defines(stmt_def, var, _).
+
+VariableOfBool(var) :-
+  (Statement_Opcode(stmt_use, "NOT");
+  Statement_Opcode(stmt_use, "ISZERO")),
+  Statement_Uses(stmt_use, var, _).
+
+VariableOfBool(var) :-
+  VariableOfBool(_var),
+  Variable_Value(_var, bool_value),
+  Variable_Value(var, bool_value).
+
+VariableOfBool(var) :-
+  Variable_Value(var, _),
+  !VariableExistValueNot01(var).
+
+// StoreVar
+.decl VariableToStore(var: Variable)
+VariableToStore(var) :-
+  DataFlows(var, var_store),
+  Statement_Opcode(stmt_store, "SSTORE"),
+  Statement_Uses(stmt_store, var_store, _).
+
+VariableToStore(var) :-
+  DataFlows(var, var_store),
+  Statement_Opcode(stmt_mstore, "MSTORE"),
+  Statement_Uses(stmt_mstore, var_store, _).
+
+// ConVarOfFunc
+.decl RequireForVar(conVar: Variable, func: Function)
+RequireForVar(conVar, func) :-
+  ControlsWith(_, _block, conVar),
+  InFunction(_block, func).
+
+// VarForLimitTransfer
+.decl VarForLimitTransfer(var: Variable, func_transfer: Function)
+VarForLimitTransfer(var, func_transfer) :-
+  RequireForVar(var, func_transfer),
+  FunctionForTransfer(func_transfer).
+
+
+// Analysis of Functions Features 
+// FunctionForTransfer
+.decl FunctionForTransfer(func: Function)
+.output FunctionForTransfer
+FunctionForTransfer(func) :-
+  func != "0x0",
+  !PublicFunctionForOwner(func),
+  TokenBalancesAdd(func, _, _, _, _),
+  TokenBalancesSub(func, _, _, _, _).
+
+FunctionForTransfer(func) :-
+  func != "0x0",
+  !PublicFunctionForOwner(func),
+  FunctionForTransfer(_func),
+  CallGraphEdge(_block, _func),
+  InFunction(_block, func).
+
+// FunctionForModifieVar
+.decl FunctionThatModifieVar(var: Variable, func: Function)
+.output FunctionThatModifieVar
+FunctionThatModifieVar(var, func) :-
+  func != "0x0",
+  Statement_Opcode(stmt_store, "SSTORE"),
+  Statement_Uses(stmt_store, var, 1),
+  Statement_Function(stmt_store, func).
+
+// PublicFunctionForOwner
+.decl PublicFunctionForOwner(func: Function)
+.output PublicFunctionForOwner
+PublicFunctionForOwner(func) :-
+  IsPublicFunction(func),
+  FunctionForOwner(func).
+
+.decl FunctionForOwner(func: Function)
+.output FunctionForOwner
+FunctionForOwner(func) :-
+  func != "0x0",
+  !HighLevelFunctionName(func, "transferFrom(address,address,uint256)"),
+  !HighLevelFunctionName(func, "transfer(address,uint256)"),
+  !HighLevelFunctionName(func, "approve(address,uint256)"),
+  !HighLevelFunctionName(func, "increaseAllowance(address,uint256)"),
+  !HighLevelFunctionName(func, "decreaseAllowance(address,uint256)"),
+
+  StaticallyGuardedBlock(guardedblock, _),
+  // InFunction(guardedblock, func),
+  InFunction(_block, func),
+  Dominates(guardedblock, _block).
+
+  
+
+
+// Identifying Malicious Functions
+// Hidden Mint Function
+.decl HiddenMintFunction(func: Function)
+.output HiddenMintFunction
+HiddenMintFunction(func) :-
+  (HiddenMintFunction_Withoutsub(func); HiddenMintFunction_Withsub(func)).
+
+.decl HiddenMintFunction_Withoutsub(func: Function)
+.output HiddenMintFunction_Withoutsub
+HiddenMintFunction_Withoutsub(func) :-
+  AddressInParameter(_, _, func),
+  VariableInParameter(amount, _, func),
+  !VariableOfBool(amount),
+
+  PublicFunctionForOwner(func),
+
+  TokenBalancesAdd(func, _, _, _, _),
+  !TokenBalancesSub(func, _, _, _, _).
+
+.decl HiddenMintFunction_Withsub(func: Function)
+.output HiddenMintFunction_Withsub
+HiddenMintFunction_Withsub(func) :-
+  AddressInParameter(address1, _, func),
+  AddressInParameter(address2, _, func),
+  address1 != address2,
+  
+  VariableInParameter(var, _, func),
+  !VariableOfBool(var),
+
+  PublicFunctionForOwner(func),
+  TokenBalancesAdd(func, _, _, _, _),
+  TokenBalancesSub(func, _, _, _, _).
+
+
+// Limiting Sell Order
+.decl LimitingSellOrder(func: Function, var: Variable)
+.output LimitingSellOrder
+LimitingSellOrder(func, var) :-
+  VariableInParameter(var, _, func),
+  VariableOfBool(var),
+  PublicFunctionForOwner(func),
+  FunctionThatModifieVar(sellorder, func),
+  VarForLimitTransfer(var, _).
+
+LimitingSellOrder(func, var) :-
+  VariableInParameter(var, _, func),
+  PublicFunctionForOwner(func),
+  FunctionThatModifieVar(sellorder, func),
+  VariableOfBool(sellorder),
+  VarForLimitTransfer(var, _).
+
+LimitingSellOrder(func, var) :-
+  AddressInParameter(_, _, func),
+  PublicFunctionForOwner(func),
+  FunctionThatModifieVar(sellorder, func),
+  VarForLimitTransfer(var, _).
+
+
+// Leaking Token
+.decl LeakingToken(func: Function)
+.output LeakingToken
+LeakingToken(func) :-
+  (LeakingToken_Withdraw(func); LeakingToken_Transfer(func)).
+
+.decl LeakingToken_Transfer(func: Function)
+.output LeakingToken_Transfer
+LeakingToken_Transfer(func) :-
+  AddressInParameter(address1, _, func),
+  AddressInParameter(address2, _, func),
+  Variable_Value(address1, account1),
+  Variable_Value(address2, account2),
+  account1 != account2,
+  VariableInParameter(var, _, func),
+  !VariableOfBool(var),
+
+  PublicFunctionForOwner(func),
+  TokenBalancesAdd(func, _, _, _, _),
+  TokenBalancesSub(func, _, _, _, _).
+
+.decl LeakingToken_Withdraw(func: Function)
+.output LeakingToken_Withdraw
+LeakingToken_Withdraw(func) :-
+  PublicFunctionForOwner(func),
+  AddressInParameter(_, _, func),
+  Statement_Opcode(stmt_and, "AND"),
+  Statement_Opcode(stmt_jump, "JUMP"),
+  Statement_Defines(stmt_and, _address, _),
+  Statement_Uses(stmt_jump, _address, _),
+  Statement_Block(stmt_and, _block),
+  Statement_Block(stmt_jump, _block),
+  InFunction(_block, func).
+
+.decl MintDetail(func: Function, block: Block, stmt: Statement, op: Opcode)
+.output MintDetail
+MintDetail(func, block, stmt, op) :-
+  Mint_0106(func),
+  Statement_Opcode(stmt, op),
+  Statement_Block(stmt, block),
+  InFunction(block, func).
+
+.decl LimitDetail(func: Function, block: Block, stmt: Statement, op: Opcode)
+.output LimitDetail
+LimitDetail(func, block, stmt, op) :-
+  Limit_0102(func),
+  Statement_Opcode(stmt, op),
+  Statement_Block(stmt, block),
+  InFunction(block, func).
+
+.decl LeakDetail(func: Function, block: Block, stmt: Statement, op: Opcode)
+.output LeakDetail
+LeakDetail(func, block, stmt, op) :-
+  Leak_0104(func),
+  Statement_Opcode(stmt, op),
+  Statement_Block(stmt, block),
+  InFunction(block, func).
+
+
+// Analysis per Function
+.decl Func_0x234(func: Function, block: Block, stmt: Statement, op: Opcode)
+.output Func_0x234
+Func_0x234(func, block, stmt, op) :-
+  func = "0x234",
+  Statement_Opcode(stmt, op),
+  Statement_Block(stmt, block),
+  InFunction(block, func).
+
+.decl Func_0x218(func: Function, block: Block, stmt: Statement, op: Opcode)
+.output Func_0x218
+Func_0x218(func, block, stmt, op) :-
+  func = "0x218",
+  Statement_Opcode(stmt, op),
+  Statement_Block(stmt, block),
+  InFunction(block, func).
+
+
+
+
+
+
+
+
