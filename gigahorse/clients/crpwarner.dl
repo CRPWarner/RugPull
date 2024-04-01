@@ -86,6 +86,7 @@ IsFuncERC(func) :-
   HighLevelFunctionName(func, "increaseAllowance(address,uint256)");
   HighLevelFunctionName(func, "decreaseAllowance(address,uint256)")).
 
+
 .decl NotFuncPayable(func: Function, stmt: Statement)
 .output NotFuncPayable
 NotFuncPayable(func, stmt_callvalue) :-
@@ -108,7 +109,56 @@ CallValueDetail(func, stmt, op) :-
   Statement_Block(stmt, block),
   InFunction(block, func).
 
+// VarNotBool
+.decl VariableExistValueNot01(var: Variable) 
+VariableExistValueNot01(var):-
+  Variable_Value(var, val),
+  val != "0x0",
+  val != "0x1". 
 
+// VarBoolz
+.decl VariableOfBool(var: Variable)
+VariableOfBool(var) :-
+  (Statement_Opcode(stmt_def, "LT");
+  Statement_Opcode(stmt_def, "GT");
+  Statement_Opcode(stmt_def, "SLT");
+  Statement_Opcode(stmt_def, "SGT");
+  Statement_Opcode(stmt_def, "EQ");
+  Statement_Opcode(stmt_def, "ISZERO");
+  Statement_Opcode(stmt_def, "GT")),
+  Statement_Defines(stmt_def, var, _).
+
+VariableOfBool(var) :-
+  (Statement_Opcode(stmt_use, "NOT");
+  Statement_Opcode(stmt_use, "ISZERO")),
+  Statement_Uses(stmt_use, var, _).
+
+VariableOfBool(var) :-
+  VariableOfBool(_var),
+  Variable_Value(_var, bool_value),
+  Variable_Value(var, bool_value).
+
+VariableOfBool(var) :-
+  Variable_Value(var, _),
+  !VariableExistValueNot01(var).
+
+// StoreVar
+.decl VariableToStore(var: Variable)
+VariableToStore(var) :-
+  DataFlows(var, var_store),
+  Statement_Opcode(stmt_store, "SSTORE"),
+  Statement_Uses(stmt_store, var_store, _).
+
+VariableToStore(var) :-
+  DataFlows(var, var_store),
+  Statement_Opcode(stmt_mstore, "MSTORE"),
+  Statement_Uses(stmt_mstore, var_store, _).
+
+// ConVarOfFunc
+.decl RequireForVar(conVar: Variable, func: Function)
+RequireForVar(conVar, func) :-
+  ControlsWith(_, _block, conVar),
+  InFunction(_block, func).
 
 .decl LoadTokenBalances(func: Function, block: Block, stmt_load: Statement, var: Variable)
 .output LoadTokenBalances
@@ -234,16 +284,11 @@ Burn(func):-
   LoadandStoreBalances(inter_func, _, stmt_load, stmt_store),
   CheckTokenBalances(inter_func, _, _).
 
-
-.decl Mint(func: Function)
-.output Mint
-Mint(func) :-
-  func != "0x0",
-  !IsFuncERC(func),
-  !Burn(func),
-  !CheckTokenBalances(func, _, _),
-
+.decl ModifyBalancesNoCheck(func: Function)
+.output ModifyBalancesNoCheck
+ModifyBalancesNoCheck(func):-
   LoadandStoreBalances(func, _, stmt_load, stmt_store),
+  !CheckTokenBalances(func, _, _),
 
   Statement_Block(stmt_load, block_load),
   Statement_Block(stmt_store, block_store),
@@ -252,29 +297,31 @@ Mint(func) :-
   InFunction(block_load, func),
   InFunction(block_store, func).
 
+ModifyBalancesNoCheck(func) :-
+  StoreToDataStructure(stmt_store, _, _),
+  !StoreBool(stmt_store),
+  !StoreToDoubleMapping(_, _, stmt_store),
+  !CheckTokenBalances(func, _, _),
+
+  Statement_Function(stmt_store, func).
+
+.decl Mint(func: Function)
+.output Mint
 Mint(func) :-
   func != "0x0",
   !IsFuncERC(func),
   !Burn(func),
-  !CheckTokenBalances(func, _, _),
 
-  StoreToDataStructure(stmt_store, _, _),
-  !StoreBool(stmt_store),
-  !StoreToDoubleMapping(_, _, stmt_store),
+  ModifyBalancesNoCheck(func).
 
-  Statement_Function(stmt_store, func).
 
 .decl HiddenMintFunction(func: Function)
 .output HiddenMintFunction
 HiddenMintFunction(func) :-
-  func != "0x0",
-  // NotFuncPayable(func, _),
   FuncPublicwithOwner(func),
   Mint(func).
 
 HiddenMintFunction(func) :-
-  func != "0x0",
-  // NotFuncPayable(func, _),
   FuncPublicwithOwner(func),
   Mint(inter_func),
   FuncCall(func, inter_func).
@@ -423,9 +470,9 @@ LimitedTransfer(func, stmt_sload) :-
 
 
 
-.decl StoreVartoLimitTransfer(func: Function, stmt_store: Statement)
-.output StoreVartoLimitTransfer
-StoreVartoLimitTransfer(func, stmt_store) :-
+.decl ModifyVartoLimitTransfer(func: Function, stmt_store: Statement)
+.output ModifyVartoLimitTransfer
+ModifyVartoLimitTransfer(func, stmt_store) :-
   func != "0x0",
   LimitedTransfer(_, stmt_sload),
   Statement_Uses(stmt_sload, id_load, _),
@@ -433,13 +480,15 @@ StoreVartoLimitTransfer(func, stmt_store) :-
   Statement_Uses(stmt_store, id_store, 0),
   Variable_Value(id_store, val),
   Variable_Value(id_load, val),
+  StoreBool(stmt_store),
   Statement_Function(stmt_store, func).
 
-StoreVartoLimitTransfer(func, stmt_store) :-
+ModifyVartoLimitTransfer(func, stmt_store) :-
   func != "0x0",
   LimitedTransfer(_, stmt_sload),
   LoadFromDataStructure(stmt_sload, id, _, _),
   StoreToDataStructure(stmt_store, id, _),
+  StoreBool(stmt_store),
 
   Statement_Function(stmt_store, func).
 
@@ -448,12 +497,8 @@ StoreVartoLimitTransfer(func, stmt_store) :-
 .output LimitingSellOrder
 LimitingSellOrder(func) :-
   // 存在一个sload的变量可以限制transfer
-  func != "0x0",
-  // NotFuncPayable(func, _),
   FuncPublicwithOwner(func),
-  !IsFuncERC(func),
-  StoreVartoLimitTransfer(func, stmt_store),
-  StoreBool(stmt_store).
+  ModifyVartoLimitTransfer(func, _).
 
 
 .decl CheckBalancesofInput(func_calldata: Function, func_sload: Function, stmt_calldata: Statement, stmt_sload: Statement)
@@ -572,41 +617,30 @@ FuncModifyVar(func) :-
 .output LeakingToken_Direct
 // 直接转账的情况
 LeakingToken_Direct(func) :-
-  func != "0x0",
   !LimitingSellOrder(func),
   !HiddenMintFunction(func),
-  // NotFuncPayable(func, _),
+
   FuncPublicwithOwner(func),
   FuncTransfer_Public(func),
-  !IsFuncERC(func),
-
   CheckBalancesofInput(func, func, _, stmt_sload).
 
 LeakingToken_Direct(func) :-
-  func != "0x0",
   !LimitingSellOrder(func),
   !HiddenMintFunction(func),
-  // NotFuncPayable(func, _),
+
   FuncPublicwithOwner(func),
   FuncTransfer(inter_func),
   FuncCall(func, inter_func),
   FuncTransfer_Public(func),
-  !IsFuncERC(func),
-
   CheckBalancesofInput(func, inter_func, _, stmt_sload).
 
-// Fee
-.decl LeakingToken_Fee(func: Function)
-.output LeakingToken_Fee
-LeakingToken_Fee(func) :-
-  // NotFuncPayable(func, _),
-  FuncPublicwithOwner(func),
+.decl ModifyVarFee(func: Function)
+.output ModifyVarFee
+ModifyVarFee(func) :- 
   IsFeeExist(_, stmt_sload),
   Statement_Uses(stmt_sload, id_sload, _),
   Statement_Opcode(stmt_store, "SSTORE"),
   !StoreBool(stmt_store),
-  !LimitingSellOrder(func),
-  !HiddenMintFunction(func),
   Statement_Uses(stmt_store, id_store, 0),
 
   Variable_Value(id_sload, id),
@@ -614,14 +648,16 @@ LeakingToken_Fee(func) :-
 
   Statement_Function(stmt_store, func).
 
-LeakingToken_Fee(func) :-
-  func != "0x0",
-  // NotFuncPayable(func, _),
-  FuncPublicwithOwner(func),
+ModifyVarFee(func) :-
   IsFeeExist(_, _),
-  !LimitingSellOrder(func),
-  !HiddenMintFunction(func),
   FuncModifyVar(func).
+
+// Fee
+.decl LeakingToken_Fee(func: Function)
+.output LeakingToken_Fee
+LeakingToken_Fee(func) :-
+  FuncPublicwithOwner(func),
+  ModifyVarFee(func).
 
 .decl LeakingToken(func: Function)
 .output LeakingToken
@@ -633,60 +669,6 @@ LeakingToken(func) :-
   
 
 
-// ***********************************************************
-// fen ge xian
-// ***********************************************************
-
-// VarNotBool
-.decl VariableExistValueNot01(var: Variable) 
-VariableExistValueNot01(var):-
-  Variable_Value(var, val),
-  val != "0x0",
-  val != "0x1". 
-
-// VarBool
-.decl VariableOfBool(var: Variable)
-VariableOfBool(var) :-
-  (Statement_Opcode(stmt_def, "LT");
-  Statement_Opcode(stmt_def, "GT");
-  Statement_Opcode(stmt_def, "SLT");
-  Statement_Opcode(stmt_def, "SGT");
-  Statement_Opcode(stmt_def, "EQ");
-  Statement_Opcode(stmt_def, "ISZERO");
-  Statement_Opcode(stmt_def, "GT")),
-  Statement_Defines(stmt_def, var, _).
-
-VariableOfBool(var) :-
-  (Statement_Opcode(stmt_use, "NOT");
-  Statement_Opcode(stmt_use, "ISZERO")),
-  Statement_Uses(stmt_use, var, _).
-
-VariableOfBool(var) :-
-  VariableOfBool(_var),
-  Variable_Value(_var, bool_value),
-  Variable_Value(var, bool_value).
-
-VariableOfBool(var) :-
-  Variable_Value(var, _),
-  !VariableExistValueNot01(var).
-
-// StoreVar
-.decl VariableToStore(var: Variable)
-VariableToStore(var) :-
-  DataFlows(var, var_store),
-  Statement_Opcode(stmt_store, "SSTORE"),
-  Statement_Uses(stmt_store, var_store, _).
-
-VariableToStore(var) :-
-  DataFlows(var, var_store),
-  Statement_Opcode(stmt_mstore, "MSTORE"),
-  Statement_Uses(stmt_mstore, var_store, _).
-
-// ConVarOfFunc
-.decl RequireForVar(conVar: Variable, func: Function)
-RequireForVar(conVar, func) :-
-  ControlsWith(_, _block, conVar),
-  InFunction(_block, func).
 
 
 // For test
